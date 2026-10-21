@@ -1,1 +1,403 @@
+asyncapi: '2.6.0'
+id: 'urn:julShop:kafka:9092'
+info:
+  title: AsyncAPI Specification for Jul-shop Event-Driven Architecture
+  version: '1.0.0'
+  description: 'Спецификация асинхронного обмена данными между микросервисами интернет-магазина Jul-shop через брокер Apache Kafka.'
 
+servers:
+  dev:
+    url: localhost:9092
+    protocol: kafka-secure
+    description: 'Параметры подключения к dev-брокеру Kafka'
+    security:
+      - saslScram: [SCRAM-SHA-256]
+
+defaultContentType: application/json
+
+channels:
+  # ==========================================
+  # 1. ТОПИК ЗАКАЗОВ
+  # ==========================================
+  orders.events:
+    description: |
+      Топик для всех событий, связанных с созданием и первичной обработкой новых заказов клиентов. 
+      Продюсер: order-service-producer.
+      Потребители: 
+        - payments-pending-consumer (Создает ожидаемую оплату при типе online_payment)
+        - warehouse-assembly-consumer (Запускает сборку БЕЗ предоплаты при типе payment_on_delivery)
+        - logistics-reservation-consumer (Резервирует доставку БЕЗ предоплаты при типе payment_on_delivery)
+    publish:
+      summary: 'Публикация события создания нового заказа клиентом'
+      operationId: publishOrderCreated
+      traits:
+        - $ref: '#/components/operationTraits/kafkaOrderAndPayment'
+      message:
+        $ref: '#/components/messages/orderCreatedMessage'
+    bindings:
+      kafka:
+        key:
+          type: string
+          description: 'Ключ партиционирования по order_id (строгий хронологический порядок FIFO)'
+
+  # ==========================================
+  # 2. ТОПИК ПЛАТЕЖЕЙ
+  # ==========================================
+  payments.events:
+    description: |
+      Топик для всех событий, связанных с платежными транзакциями клиентов. Уведомляет об успешной онлайн-оплате или тайм-ауте.
+      Продюсер: payment-service-producer.
+      Потребители:
+        - warehouse-assembly-consumer (Запускает сборку товара после успешной онлайн-оплаты)
+        - logistics-reservation-consumer (Резервирует время доставки после онлайн-оплаты)
+        - order-cancellation-consumer (Слушает тайм-аут неоплаты и переводит заказ в статус Отменен)
+    publish:
+      summary: 'Публикация статуса транзакции онлайн-шлюза'
+      operationId: publishPaymentStatus
+      traits:
+        - $ref: '#/components/operationTraits/kafkaOrderAndPayment'
+      message:
+        $ref: '#/components/messages/paymentStatusMessage'
+    bindings:
+      kafka:
+        key:
+          type: string
+          description: 'Ключ партиционирования по order_id для связи с заказом'
+
+  # ==========================================
+  # 3. ТОПИК СКЛАДА
+  # ==========================================
+  warehouse.events:
+    description: |
+      Топик для всех событий, связанных со складскими операциями по комплектации товаров.
+      Продюсер: warehouse-service-producer.
+      Потребитель:
+        - delivery-planning-consumer (Планирует доставку и курьеров, когда заказ собран)
+    publish:
+      summary: 'Уведомление о завершении сборки заказа на складе'
+      operationId: publishOrderAssembled
+      traits:
+        - $ref: '#/components/operationTraits/kafkaWarehouseAndLogistics'
+      message:
+        $ref: '#/components/messages/orderAssembledMessage'
+    bindings:
+      kafka:
+        key:
+          type: string
+          description: 'Ключ партиционирования по order_id'
+
+  # ==========================================
+  # 4. ТОПИК ЛОГИСТИКИ
+  # ==========================================
+  logistics.events:
+    description: |
+      Топик для всех событий, связанных со службой доставки. Фиксирует финальный статус передачи заказа.
+      Продюсер: logistics-service-producer.
+      Потребители:
+        - sales-closure-consumer (Закрывает сделку по заказу успешно при DELIVERED или неуспешно при REJECTED)
+        - warehouse-return-consumer (Фиксирует необходимость возврата товара на склад при отказе)
+        - payments-refund-consumer (Оформляет возврат денег клиенту при отказе для типа online_payment)
+    publish:
+      summary: 'Фиксация курьером результата выполнения физической доставки'
+      operationId: publishDeliveryStatus
+      traits:
+        - $ref: '#/components/operationTraits/kafkaWarehouseAndLogistics'
+      message:
+        $ref: '#/components/messages/deliveryStatusMessage'
+    bindings:
+      kafka:
+        key:
+          type: string
+          description: 'Ключ партиционирования по order_id'
+
+  # ==========================================
+  # 5. ТОПИК ОТЗЫВОВ
+  # ==========================================
+  reviews.events:
+    description: |
+      Топик для всех событий, связанных с отзывами на товары от клиентов.
+      Продюсер: reviews-service-producer.
+      Потребители:
+        - negative-reviews-consumer (Обрабатывает плохие отзывы с рейтингом 0-1)
+        - neutral-reviews-consumer (Обрабатывает отзывы с рейтингом 2-3)
+        - positive-reviews-consumer (Обрабатывает отличные отзывы с рейтингом 4-5)
+    publish:
+      summary: 'Поток поступающих пользовательских отзывов и оценок на товары'
+      operationId: publishProductReview
+      traits:
+        - $ref: '#/components/operationTraits/kafkaReviews'
+      message:
+        $ref: '#/components/messages/productReviewMessage'
+    bindings:
+      kafka:
+        key:
+          type: string
+          description: 'Ключ партиционирования по product_id для сбалансированного пересчета рейтинга'
+ components:
+  securitySchemes:
+    saslScram:
+      type: scramSha256
+      description: 'Протокол безопасности SASL_SSL, механизм безопасности SCRAM-SHA-256'
+
+  # ==========================================
+  # СТРУКТУРЫ СООБЩЕНИЙ (MESSAGES)
+  # ==========================================
+  messages:
+    orderCreatedMessage:
+      name: orderCreatedMessage
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/orderHeader'
+      payload:
+        type: object
+        required: [order_id, status_code, client_id, total_amount, delivery_method, delivery_address, payment_type, created_at, items]
+        additionalProperties: false
+        properties:
+          order_id:
+            type: integer
+            description: 'BIGINT Первичный ключ заказа из таблицы orders'
+          status_code:
+            type: string
+            enum: [CREATED]
+            description: 'Текстовый код статуса из таблицы statuses (для данного события всегда CREATED), полученный по значению status_id'
+          client_id:
+            type: integer
+            description: 'INTEGER Идентификатор клиента'
+          total_amount:
+            type: string
+            description: 'DECIMAL(10,2) Общая стоимость заказа строкой'
+          delivery_method:
+            type: string
+            enum: [courier, pickup]
+            description: 'Способ доставки (курьер / самовывоз)'
+          delivery_address:
+            type: string
+            description: 'Полный адрес доставки текстом'
+          payment_type:
+            type: string
+            enum: [online_payment, payment_on_delivery]
+            description: 'Тип оплаты заказа для фильтрации консьюмерами'
+          comment:
+            type: string
+            description: 'Комментарий клиента к заказу'
+          created_at:
+            type: string
+            format: date-time
+            description: 'Дата и время создания заказа'
+          items:
+            type: array
+            description: 'Список позиций в заказе из таблицы order_items'
+            items:
+              type: object
+              required: [product_id, quantity, price, discount]
+              properties:
+                product_id:
+                  type: integer
+                  description: 'BIGINT Идентификатор товара'
+                quantity:
+                  type: string
+                  description: 'DECIMAL(10,3) Количество товара строкой'
+                price:
+                  type: string
+                  description: 'DECIMAL(10,2) Цена за единицу строкой'
+                discount:
+                  type: string
+                  description: 'DECIMAL(5,2) Процент скидки строкой'
+
+    paymentStatusMessage:
+      name: paymentStatusMessage
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/paymentHeader'
+      payload:
+        type: object
+        required: [id, order_id, amount, payment_method, status_code, updated_at]
+        additionalProperties: false
+        properties:
+          id:
+            type: integer
+            description: 'BIGINT Первичный ключ транзакции из таблицы payments'
+          order_id:
+            type: integer
+            description: 'BIGINT Идентификатор связанного заказа'
+          amount:
+            type: string
+            description: 'DECIMAL(10,2) Сумма платежа строкой'
+          payment_method:
+            type: string
+            enum: [erip, belkart, visa, mastercard, mir]
+            description: 'Способ оплаты'
+          status_code:
+            type: string
+            enum: [PAID, FAILED, TIMEOUT]
+            description: 'Статус: PAID (Успешно), FAILED (Ошибка оплаты), TIMEOUT (Просрочено по тайм-ауту). Текстовый код статуса из таблицы statuses, полученный по значению status_id'
+          updated_at:
+            type: string
+            format: date-time
+            description: 'Дата и время фиксации статуса оплаты'
+
+    orderAssembledMessage:
+      name: orderAssembledMessage
+      contentType: application/json
+      payload:
+        type: object
+        required: [order_id, status_code, total_packages, assembled_at]
+        additionalProperties: false
+        properties:
+          order_id:
+            type: integer
+            description: 'BIGINT Идентификатор собранного заказа из таблицы order_items'
+          status_code:
+            type: string
+            enum: [ASSEMBLED]
+            description: 'Статус складской операции: ASSEMBLED (Сборка завершена)'
+          total_packages:
+            type: integer
+            description: 'Количество сформированных коробок/мест для курьера'
+          assembled_at:
+            type: string
+            format: date-time
+            description: 'Дата и время окончания сборки'
+
+    deliveryStatusMessage:
+      name: deliveryStatusMessage
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/logisticsHeader'
+      payload:
+        type: object
+        required: [order_id, status_code, delivery_method, payment_type, completed_at]
+        additionalProperties: false
+        properties:
+          order_id:
+            type: integer
+            description: 'BIGINT Идентификатор заказа'
+          status_code:
+            type: string
+            enum: [DELIVERED, REJECTED]
+            description: 'Результат: DELIVERED (Доставлено), REJECTED (Отказ клиента на месте)'
+          delivery_method:
+            type: string
+            description: 'Метод доставки из таблицы orders'
+          payment_type:
+            type: string
+            enum: [online_payment, payment_on_delivery]
+            description: 'Тип оплаты'
+          comment:
+            type: string
+            description: 'Причина отказа (заполняется только при статусе REJECTED)'
+          completed_at:
+            type: string
+            format: date-time
+            description: 'Дата и время закрытия накладной курьером'
+
+    productReviewMessage:
+      name: productReviewMessage
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/reviewHeader'
+      payload:
+        type: object
+        required: [id, product_id, client_id, rating, created_at]
+        additionalProperties: false
+        properties:
+          id:
+            type: integer
+            description: 'INTEGER Первичный ключ отзыва из таблицы product_reviews'
+          product_id:
+            type: integer
+            description: 'BIGINT Идентификатор товара'
+          client_id:
+            type: integer
+            description: 'INTEGER Идентификатор автора отзыва'
+          rating:
+            type: integer
+            minimum: 0
+            maximum: 5
+            description: 'Оценка от 0 до 5 для распределения по консьюмерам'
+          comment:
+            type: string
+            description: 'Текст отзыва покупателя. Может быть пустым, если клиент поставил только оценку'
+          created_at:
+            type: string
+            format: date-time
+            description: 'Дата и время публикации отзыва'
+
+  # ==========================================
+  # KAFKA HEADERS (ЗАГОЛОВКИ СТРАТЕГИИ ФИЛЬТРАЦИИ)
+  # ==========================================
+  messageTraits:
+    orderHeader:
+      headers:
+        type: object
+        properties:
+          payment_type:
+            type: string
+            enum: [online_payment, payment_on_delivery]
+        description: "Используются Kafka Headers: payment_type ('online_payment' / 'payment_on_delivery') для быстрой фильтрации консьюмерами."
+
+    paymentHeader:
+      headers:
+        type: object
+        properties:
+          status_code:
+            type: string
+            enum: [PAID, TIMEOUT]
+        description: "Используются Kafka Headers: status_code ('PAID' / 'TIMEOUT') для маршрутизации событий отмены или сборки."
+
+    logisticsHeader:
+      headers:
+        type: object
+        properties:
+          status_code:
+            type: string
+            enum: [DELIVERED, REJECTED]
+        description: "Используются Kafka Headers: status_code ('DELIVERED' / 'REJECTED') для быстрой фильтрации."
+
+    reviewHeader:
+      headers:
+        type: object
+        properties:
+          rating:
+            type: string
+        description: "Используются Kafka Headers: rating (0-5) для мгновенной фильтрации негативных/позитивных отзывов."
+
+  # ==========================================
+  # ОГРАНИЧЕНИЯ И НАСТРОЙКИ ТОПИКОВ (RETENTION/PARTITIONS)
+  # ==========================================
+  operationTraits:
+    kafkaOrderAndPayment:
+      bindings:
+        kafka:
+          partitions: 3
+          replicas: 3
+          topicConfiguration:
+            cleanup.policy: ["delete"]
+            retention.ms: 259200000        # 72 часа хранения (высокая критичность)
+            retention.bytes: 524288000     # Максимальный объем: 500 Мбайты [из файла: 8]
+            max.message.bytes: 1048576     # Максимальный размер сообщений: 1 Мбайт [из файла: 8]
+        bindingVersion: '0.4.0'
+
+    kafkaWarehouseAndLogistics:
+      bindings:
+        kafka:
+          partitions: 3
+          replicas: 3
+          topicConfiguration:
+            cleanup.policy: ["delete"]
+            retention.ms: 172800000        # 48 часов хранения (операционные данные)
+            retention.bytes: 209715200     # Максимальный объем: 200 Мбайты [из файла: 8]
+            max.message.bytes: 1048576     # Максимальный размер сообщений: 1 Мбайт [из файла: 8]
+        bindingVersion: '0.4.0'
+
+    kafkaReviews:
+      bindings:
+        kafka:
+          partitions: 3
+          replicas: 3
+          topicConfiguration:
+            cleanup.policy: ["delete"]
+            retention.ms: 86400000         # 24 часа хранения (низкая критичность)
+            retention.bytes: 104857600     # Максимальный объем: 100 Мбайты [из файла: 8]
+            max.message.bytes: 1048576     # Максимальный размер сообщений: 1 Мбайт [из файла: 8]
+bindingVersion: '0.4.0'
