@@ -22,7 +22,7 @@ channels:
   orders.events:
     description: |
       Топик для всех событий, связанных с созданием и первичной обработкой новых заказов клиентов. 
-      Продюсер: order-service-producer.
+      Продюсер: order-service-producer
       Потребители: 
         - payments-pending-consumer (Создает ожидаемую оплату при типе online_payment)
         - warehouse-assembly-consumer (Запускает сборку БЕЗ предоплаты при типе payment_on_delivery)
@@ -133,7 +133,7 @@ channels:
         key:
           type: string
           description: 'Ключ партиционирования по product_id для сбалансированного пересчета рейтинга'
- components:
+components:
   securitySchemes:
     saslScram:
       type: scramSha256
@@ -400,4 +400,4 @@ channels:
             retention.ms: 86400000         # 24 часа хранения (низкая критичность)
             retention.bytes: 104857600     # Максимальный объем: 100 Мбайты [из файла: 8]
             max.message.bytes: 1048576     # Максимальный размер сообщений: 1 Мбайт [из файла: 8]
-bindingVersion: '0.4.0'
+        bindingVersion: '0.4.0'
