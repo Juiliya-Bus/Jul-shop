@@ -1,1 +1,701 @@
+openapi: 3.0.0
+servers:
+  # Added by API Auto Mocking Plugin
+  - description: SwaggerHub API Auto Mocking
+    url: https://virtserver.swaggerhub.com/it-983/BuskoJul_17_10_2026/1.0.0
+info:
+  title: Jul-shop API 
+  version: "1.0.0"
+  description: |
+    API интернет-магазина Jul-shop: аутентификация, каталог, корзина, заказы, оплаты, отзывы, профиль.
 
+    ## Общие правила API (jul-shop.by)
+
+    * **Аутентификация и роли**: Доступ к методам API разделен на два типа:
+      * **Публичный доступ (Гость)**: Аутентификация не требуется. Любой неавторизованный пользователь может просматривать каталог товаров, управлять гостевой корзиной, выбирать способ доставки, оформлять и оплачивать заказы.
+      * **Приватный доступ (По ролям)**: Требует передачи JWT-токена в заголовке `Authorization: Bearer <access_token>`. Права разграничены по ролям:
+        * `customer` — зарегистрированный покупатель (доступ к ЛК, адресам доставки, привязке дисконтных карт, публикации отзывов).
+        * `admin` — администратор сайта (управление товарами, категориями, ценами, групповыми скидками и заказами других пользователей).
+
+    * **Идентификация пользователей и гостевых сессий**:
+      * Для авторизованных пользователей (`customer` / `admin`) их внутренние идентификаторы (`client_id` / `employee_id`) **не передаются** в теле или query-параметрах запросов. Бэкенд автоматически извлекает их из payload токена (`sub`). Исключение — административные методы управления сущностями.
+      * Для неавторизованных (гостевых) пользователей привязка данных (например, корзины) происходит по уникальному `cart_id`, который передается в пути эндпоинта (например, `/carts/{cart_id}`).
+
+    * **Гибридный доступ (Корзина и Заказы)**: В методах управления корзиной и оформления заказов заголовок `Authorization` является **необязательным**. Если токен передан, система связывает сущность с аккаунтом клиента (заполняет `client_id` в БД); если токен отсутствует, сущность обрабатывается как гостевая.
+
+    * **Конкурентный доступ**: Все изменяемые ресурсы при `GET`-запросах отдают заголовок `ETag`. Любые запросы на модификацию или удаление данных (`PATCH`, `PUT`, `DELETE`) строго требуют передачи заголовка `If-Match` с актуальной версией ресурса. При отсутствии заголовка возвращается `428 Precondition Required`, при несовпадении версий — `412 Precondition Failed`.
+
+    * **Идемпотентность**: Для всех запросов методом `POST`, создающих новые сущности или инициирующих транзакции (добавление товара, создание корзины/заказа, оформление возврата, проведение платежа), **обязателен** заголовок `Idempotency-Key`. Повторный запрос с тем же ключом возвращает `200 OK` и сохраненный результат прошлой операции без повторного изменения БД.
+
+    * **Обработка ошибок (400 vs 422)**:
+      * `400 Bad Request` — возвращается при нарушении структуры JSON, несоответствии типов данных или отсутствии обязательных полей.
+      * `422 Unprocessable Entity` — возвращается, когда структура запроса верна, но значения полей нарушают бизнес-логику (например: `price <= 0`, `quantity <= 0`, некорректный формат телефона/email, `discount_rate` вне диапазона 0–100, или сумма возврата превышает сумму платежа).
+
+    * **Пагинация и сортировка**: Для списочных эндпоинтов (например, `GET /products`, `GET /orders`) используются query-параметры `limit` (по умолчанию 20, максимум 100), `offset` для смещения и `sort=имя_поля,asc|desc` для сортировки.
+
+    * **Специфические типы данных и форматы**:
+      * **Идентификаторы (ID)**:
+        * `product_id`, `order_id`, `cart_id`, `cart_item_id`, `order_item_id`, `payment_id`, `address_id` — строго **integer** (`BIGINT` в БД).
+        * `client_id`, `employee_id`, `product_category_id`, `clients_group_id`, `client_group_discount_id`, `unit_id`, `status_id` — строго **integer** (`INTEGER` в БД).
+      * **Денежные суммы и дробные значения**:
+        * Цены и суммы (`price`, `total_amount`, `amount`, `discount`, `item_amount`) — строго передаются в формате **string** (строка с числовым значением, например, `"2.50"`), что предотвращает потерю точности на стороне фронтенда (в БД при этом используется точный тип `DECIMAL`).
+        * Количества (`quantity`) — передаются как **number/decimal** (число, например, `2.000` для весовых товаров), так как поддерживают дробную часть в соответствии с форматом `DECIMAL(10, 3)` в физической модели.
+        * Процентные ставки (`discount_rate`) — передаются как **number** (число, например, `2.50`), так как являются коэффициентом и не требуют строкового обертывания. В API валидируются в диапазоне от 0 до 100.
+      * **Временные метки**: Все даты (`created_at`, `updated_at`) возвращаются строго в текстовом стандарте **ISO 8601 UTC** (например, `2026-10-19T00:15:00Z`).
+      * **Строковые форматы**: Номер телефона (`phone`) валидируется на международный формат (например, `+375XXXXXXXXX`), электронная почта (`email`) — на соответствие стандарту RFC 5322.
+  contact:
+    email: ynbusko@gmail.com
+  license:
+    name: Apache 2.0
+    url: 'http://www.apache.org/licenses/LICENSE-2.0.html'
+tags:
+  - name: authorization
+    description: Управление доступом
+  - name: clients
+    description: Данные клиентов
+  - name: clients-groups
+    description: Управление группами клиентов
+  - name: client-group-discounts
+    description: Скидки клиентов
+  - name: products
+    description: Управление товарами
+  - name: product-categories
+    description: Разделы товаров
+  - name: product-reviews
+    description: Отзывы о товарах
+  - name: carts
+    description: Операции с корзиной
+  - name: orders
+    description: Операции с заказами
+  - name: payments
+    description: Управление платежами
+paths:
+  /products:
+    post:
+      tags:
+      - products
+      summary: Создание новой карточки товара
+      operationId: productCreation
+      description: Создание нового товара (администратор)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductInput'
+      responses:
+        '201':
+          description: Товар успешно добавлен в каталог
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        '200':
+          $ref: '#/components/responses/IdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      tags:
+        - products
+      summary: Просмотр списка товаров в определенном разделе
+      operationId: listProducts
+      description: Получение списка товаров по разделу (Все)
+      security: []
+      parameters:
+        - name: product_category_id
+          in: query
+          description: Фильтрация по разделу
+          required: true
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          description: Количество возвращаемых товаров на страницу
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          description: Смещение от начала списка
+          schema:
+            type: integer
+            default: 0
+        - name: sort
+          in: query
+          description: Поле и направление сортировки (формат field,asc|desc)
+          schema:
+            type: string
+            example: "name,asc"
+      responses:
+        '200':
+          description: Список товаров выбранного раздела успешно загружен с учетом пагинации и сортировки
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    description: Список товаров выбранного раздела
+                    items:
+                      $ref: '#/components/schemas/ProductResponse'
+                  limit:
+                    type: integer
+                    description: Количество товаров на страницу
+                  offset:
+                    type: integer
+                    description: Смещение от начала списка
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /products/{product_id}:
+    patch:
+      tags:
+        - products
+      summary: Редактирование данных о товаре (частичное)
+      description: Частичное изменение. Передаётся хотя бы одно поле. (Администратор)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          description: Целочисленный идентификатор товара
+          schema:
+            type: integer
+            minimum: 1
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductPatchInput'
+      responses:
+        '200':
+          description: Товар обновлён
+          headers:
+            ETag:
+              description: Новая версия товара
+              required: true
+              schema:
+                type: string
+              example: '"2"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /clients/me/addresses:
+    post:
+      tags:
+      - clients
+      summary: Добавление адреса доставки покупателем
+      operationId: clientsAddressesCreation
+      description: Создание нового адреса клиентом (зарегистрированный покупатель)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressInput'
+      responses:
+        '201':
+          description: Адрес успешно добавлен
+          headers:
+            Location:
+              description: Ссылка на созданный адрес
+              schema:
+                type: string
+              example: /clients/me/addresses/1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddressResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /clients/me/addresses/{address_id}:
+    put:
+      tags:
+      - clients
+      summary: Обновление адреса доставки покупателем
+      operationId: clientsAddressesUpdate
+      description: Обновление/изменение адреса клиентом (зарегистрированный покупатель)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: address_id
+          in: path
+          required: true
+          description: Идентификатор адреса
+          schema:
+            type: integer
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressInput'
+      responses:
+        '200':
+          description: Адрес успешно обновлён, возвращён новый ETag
+          headers:
+            ETag:
+              description: Новая версия адреса
+              required: true
+              schema:
+                type: string
+              example: '"v2"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddressResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags:
+      - clients
+      summary: Удаление адреса доставки покупателем
+      operationId: deleteClientAddress
+      description: Удаление адреса клиентом (зарегистрированный покупатель)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: address_id
+          in: path
+          required: true
+          description: Идентификатор адреса
+          schema:
+            type: integer
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '204':
+          description: Адрес удален
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Введите ваш access_token в формате JWT
+  schemas:
+    AddressInput:
+      type: object
+      description: Схема для добавления адреса доставки (строка 12 таблицы)
+      required:
+        - is_default
+        - country
+        - street
+        - house
+      properties:
+        is_default:
+          type: boolean
+          description: Флаг использования адреса по умолчанию
+          example: false
+        country:
+          type: string
+          description: Страна
+          example: Беларусь
+        region:
+          type: string
+          description: Область (необязательное поле)
+          example: Минская область
+        city:
+          type: string
+          description: Город (передается только если не заполнен settlement)
+          example: Минск
+        settlement:
+          type: string
+          description: Населенный пункт / деревня (передается только если не заполнен city)
+          example: деревня Боровляны
+        street:
+          type: string
+          description: Улица
+          example: Ленина
+        house:
+          type: string
+          description: Номер дома
+          example: "10"
+        apartment:
+          type: string
+          description: Номер квартиры или офиса (необязательное поле)
+          example: "15"
+        floor:
+          type: string
+          description: Этаж (необязательное поле)
+          example: "3"
+      oneOf:
+        - required:
+            - city
+          not:
+            required:
+              - settlement
+        - required:
+            - settlement
+          not:
+            required:
+              - city
+    ProductPatchInput:
+      type: object
+      description: Схема для изменения товаров
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          description: Наименование товара
+          example: Молоко 3,2
+        sku:
+          type: string
+          description: Артикул товара
+          example: A1260
+        price:
+          type: string
+          description: Цена товара
+          example: "2.50"
+        unit_id:
+          type: integer
+          description: Единица измерения товара
+          example: 1
+        product_category_id:
+          type: integer
+          description: Раздел товаров
+          example: 2
+    ProductInput:
+      type: object
+      description: Схема для создания товаров
+      required:
+        - name
+        - sku
+        - price
+        - unit_id
+        - product_category_id
+      properties:
+        name:
+          type: string
+          description: Наименование товара
+          example: Молоко 3,2
+        sku:
+          type: string
+          description: Артикул товара
+          example: A1260
+        price:
+          type: string
+          description: Цена товара
+          example: "2.50"
+        unit_id:
+          type: integer
+          description: Единица измерения товара
+          example: 1
+        product_category_id:
+          type: integer
+          description: Раздел товаров
+          example: 2
+    ProductResponse:
+      type: object
+      description: Схема для ответа по товару при создании или изменении
+      required:
+        - id
+        - name
+        - sku
+        - price
+        - unit_id
+        - product_category_id
+      properties:
+        id:
+          type: integer
+          description: Id созданного/измененного товара
+          example: 105
+        name:
+          type: string
+          description: Наименование товара
+          example: Молоко 3,2
+        sku:
+          type: string
+          description: Артикул товара
+          example: A1260
+        price:
+          type: string
+          description: Цена товара
+          example: "2.50"
+        unit_id:
+          type: integer
+          description: Единица измерения товара
+          example: 1
+        product_category_id:
+          type: integer
+          description: Раздел товаров
+          example: 2
+    AddressResponse:
+      type: object
+      description: Схема для ответа по адресу клиента при создании или изменении
+      required:
+        - id
+      properties:
+        id:
+          type: integer
+          description: Id созданного/измененного адреса
+          example: 1
+        is_default:
+          type: boolean
+          description: Флаг использования адреса по умолчанию
+          example: false
+        country:
+          type: string
+          description: Страна
+          example: Беларусь
+        region:
+          type: string
+          description: Область (необязательное поле)
+          example: Минская область
+        city:
+          type: string
+          description: Город (передается только если не заполнен settlement)
+          example: Минск
+        settlement:
+          type: string
+          description: Населенный пункт / деревня (передается только если не заполнен city)
+          example: деревня Боровляны
+        street:
+          type: string
+          description: Улица
+          example: Ленина
+        house:
+          type: string
+          description: Номер дома
+          example: "10"
+        apartment:
+          type: string
+          description: Номер квартиры или офиса (необязательное поле)
+          example: "15"
+        floor:
+          type: string
+          description: Этаж (необязательное поле)
+          example: "3"
+    Error:
+      type: object
+      description: Универсальная схема ошибки
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          example: UNAUTHORIZED
+        message:
+          type: string
+        request_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        path:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              issue:
+                type: string
+  parameters:
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: ETag текущей версии ресурса, полученный из GET.
+      schema:
+        type: string
+        example: '"1"'
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Уникальный ключ операции. Область: user_id + operation + value.
+        Один ключ с тем же телом → возврат сохранённого результата.
+        Один ключ с другим телом → 409 IDEMPOTENCY_KEY_REUSED.
+        Срок хранения — 24 часа.
+      schema:
+        type: string
+        minLength: 16
+  responses:
+
+    BadRequest:
+      description: Ошибка структуры запроса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: Требуется аутентификация
+      headers:
+        WWW-Authenticate:
+          description: Схема аутентификации
+          required: true
+          schema:
+            type: string
+          example: 'Bearer realm="api"'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Forbidden:
+      description: Доступ запрещён
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Conflict:
+      description: Конфликт состояния
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    PreconditionFailed:
+      description: If-Match не совпал с текущей версией ресурса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    PreconditionRequired:
+      description: Отсутствует обязательный заголовок If-Match
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    UnsupportedMediaType:
+      description: Content-Type не application/json
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    UnprocessableEntity:
+      description: Значения не проходят бизнес-валидацию
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    PayloadTooLarge:
+      description: Тело запроса слишком большое
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    TooManyRequests:
+      description: Превышен лимит запросов
+      headers:
+        Retry-After:
+          description: Через сколько секунд можно повторить
+          required: true
+          schema:
+            type: integer
+          example: 60
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    IdempotentReplay:
+      description: Идемпотентный повтор. Возвращается сохранённый результат исходного запроса.
+      headers:
+        Idempotent-Replay:
+          description: Признак повторного ответа
+          required: true
+          schema:
+            type: string
+          example: 'true'
