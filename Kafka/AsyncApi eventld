@@ -46,7 +46,7 @@ channels:
   payments.events:
     description: |
       Топик для всех событий, связанных с платежными транзакциями клиентов. Уведомляет об успешной онлайн-оплате или тайм-ауте.
-      Продюсер: payment-service-producer.
+      Продюсер: payment-service-producer
       Потребители:
         - warehouse-assembly-consumer (Запускает сборку товара после успешной онлайн-оплаты)
         - logistics-reservation-consumer (Резервирует время доставки после онлайн-оплаты)
@@ -70,7 +70,7 @@ channels:
   warehouse.events:
     description: |
       Топик для всех событий, связанных со складскими операциями по комплектации товаров.
-      Продюсер: warehouse-service-producer.
+      Продюсер: warehouse-service-producer
       Потребитель:
         - delivery-planning-consumer (Планирует доставку и курьеров, когда заказ собран)
     publish:
@@ -92,7 +92,7 @@ channels:
   logistics.events:
     description: |
       Топик для всех событий, связанных со службой доставки. Фиксирует финальный статус передачи заказа.
-      Продюсер: logistics-service-producer.
+      Продюсер: logistics-service-producer
       Потребители:
         - sales-closure-consumer (Закрывает сделку по заказу успешно при DELIVERED или неуспешно при REJECTED)
         - warehouse-return-consumer (Фиксирует необходимость возврата товара на склад при отказе)
@@ -116,7 +116,7 @@ channels:
   reviews.events:
     description: |
       Топик для всех событий, связанных с отзывами на товары от клиентов.
-      Продюсер: reviews-service-producer.
+      Продюсер: reviews-service-producer
       Потребители:
         - negative-reviews-consumer (Обрабатывает плохие отзывы с рейтингом 0-1)
         - neutral-reviews-consumer (Обрабатывает отзывы с рейтингом 2-3)
